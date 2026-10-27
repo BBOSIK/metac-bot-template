@@ -16,6 +16,13 @@ jobs:
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PROBE_MODELS: >-
+            nvidia/nemotron-3-ultra-550b-a55b:free
+            google/gemma-4-31b-it:free
+            thinkingmachines/inkling:free
+            nvidia/nemotron-3.5-super-vl:free
+            dots-studio/dots-3-note-preview:free
+            openrouter/free
         run: |
           python3 - <<'EOF'
           import json, os, urllib.error, urllib.request
@@ -44,13 +51,20 @@ jobs:
           print(f"OpenRouter /key: HTTP {status}", info)
           ok &= status == 200
 
-          status, data = call(
-              "https://openrouter.ai/api/v1/chat/completions",
-              auth,
-              {"model": "nvidia/nemotron-3-super-120b-a12b:free", "messages": [{"role": "user", "content": "Reply with the single word OK."}], "max_tokens": 20},
-          )
-          reply = data["choices"][0]["message"].get("content") if isinstance(data, dict) and data.get("choices") else data
-          print(f"OpenRouter free model call: HTTP {status}", repr(reply)[:200])
-          ok &= status == 200
+          # Free models rotate without notice; each probe costs one of the 50 free requests/day.
+          models = os.environ.get("PROBE_MODELS", "").split()
+          working = []
+          for model in models:
+              status, data = call(
+                  "https://openrouter.ai/api/v1/chat/completions",
+                  auth,
+                  {"model": model, "messages": [{"role": "user", "content": "Reply with the single word OK."}], "max_tokens": 400},
+              )
+              reply = data["choices"][0]["message"].get("content") if isinstance(data, dict) and data.get("choices") else data
+              print(f"{model}: HTTP {status}", repr(reply)[:160])
+              if status == 200:
+                  working.append(model)
+          print("WORKING:", " ".join(working))
+          ok &= bool(working) or not models
           raise SystemExit(0 if ok else 1)
           EOF
