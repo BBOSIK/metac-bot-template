@@ -2,6 +2,8 @@ name: Test Bot
 
 on:
   workflow_dispatch:
+  push:
+    branches: [claude/determined-hypatia-njbwtt]  # temporary: lets the session trigger a smoke test
 
 # Add concurrency group to prevent parallel runs
 concurrency:
