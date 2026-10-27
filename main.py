@@ -76,12 +76,14 @@ OPENROUTER_PARSER = "openrouter/openai/gpt-4.1-mini"
 # Zero-cost tier, used unless BOT_TIER=paid: OpenRouter ':free' models need no credit
 # purchase but allow only 20 requests/minute and 50/day per account, and have no web
 # search, so the bot forecasts from model knowledge alone and takes few questions per run.
+# Probed 2026-10-27 with the "Check API keys" workflow; free models rotate, so re-probe
+# there when calls start failing. openrouter/free routes to whichever free model is up.
 OPENROUTER_FREE_FORECASTERS = [
     "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
-    "openrouter/google/gemma-4-31b-it:free",
-    "openrouter/thinkingmachines/inkling:free",
+    "openrouter/dots-studio/dots-3-note-preview:free",
+    "openrouter/openrouter/free",
 ]
-OPENROUTER_FREE_PARSER = "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+OPENROUTER_FREE_PARSER = "openrouter/nvidia/nemotron-3.5-super-vl:free"
 FREE_TIER_QUESTIONS_PER_RUN = 2  # per tournament; ~6 requests per question
 
 FORECASTER_TIMEOUT_SECONDS = 240  # reasoning models routinely take 1-3 minutes
