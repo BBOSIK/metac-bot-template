@@ -119,6 +119,11 @@ class BuildEnsembleTest(unittest.TestCase):
     def test_no_keys_means_library_defaults(self):
         self.assertEqual(self.build(), main.Ensemble())
 
+    def test_secret_env_whitespace_is_stripped(self):
+        with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": " sk-or-test\r\n"}):
+            main.strip_secret_env()
+            self.assertEqual(os.environ["OPENROUTER_API_KEY"], "sk-or-test")
+
 
 if __name__ == "__main__":
     unittest.main()

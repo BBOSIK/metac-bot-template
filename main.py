@@ -47,6 +47,19 @@ from forecasting_tools import (
 dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
 
+SECRET_ENV_KEYS = ("METACULUS_TOKEN", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+
+
+def strip_secret_env() -> None:
+    """Secrets pasted into GitHub often keep a trailing newline, which litellm rejects
+    as a forbidden control character in the Authorization header."""
+    for key in SECRET_ENV_KEYS:
+        if os.getenv(key):
+            os.environ[key] = os.environ[key].strip()
+
+
+strip_secret_env()
+
 # Ensemble defaults when OPENROUTER_API_KEY is set. One forecast per vendor per research
 # report; disagreement between vendors is more informative than resampling one model.
 # Override any of these with comma-separated env vars (BOT_FORECASTERS, BOT_RESEARCHER, BOT_PARSER).
