@@ -1,3 +1,18 @@
+# Ailu_Studio forecasting bot
+
+Fork of the Metaculus template bot, entered in the FutureEval bot tournament as `Ailu_Studio`.
+
+Changes from the template (all in `main.py`):
+- **Ensemble across vendors**: each research report gets one forecast per model in `forecasters` (round-robin over prediction slots) and the median is submitted. Each published rationale is tagged with its model.
+- **Free tier (default with an OpenRouter key)**: three OpenRouter `:free` models, no web research, one parse per forecast and at most two questions per tournament per run, to stay inside the free request caps.
+- **Paid tier (`BOT_TIER=paid`)**: GPT, Claude, Gemini, Grok and DeepSeek via OpenRouter, with Perplexity `sonar-pro` research.
+- Repository variables `BOT_FORECASTERS`, `BOT_RESEARCHER`, `BOT_PARSER` override the models; `BOT_SKIP_MINIBENCH=1` skips MiniBench.
+- Offline tests: `uv run python -m unittest discover -s tests`.
+
+The original template README follows.
+
+---
+
 # Simple Metaculus forecasting bot
 This repository contains a simple bot meant to get you started with creating your own bot for the AI Forecasting Tournament. Go to https://www.metaculus.com/futureeval/participate/ for more info and tournament rules (and then go to the  "Getting Started" section of our [resources](https://www.metaculus.com/notebooks/38928/ai-benchmark-resources/#want-to-join-the-ai-forecasting-benchmark) page).
 
