@@ -93,7 +93,7 @@ class BuildEnsembleTest(unittest.TestCase):
         ens = self.build(OPENROUTER_API_KEY="sk-or-test")
         self.assertTrue(ens.free_tier)
         self.assertEqual([f.model for f in ens.forecasters], main.OPENROUTER_FREE_FORECASTERS)
-        self.assertTrue(all(f.model.endswith(":free") for f in ens.forecasters))
+        self.assertTrue(all(f.model.endswith((":free", "openrouter/free")) for f in ens.forecasters))
         self.assertEqual(ens.llms["researcher"], "no_research")
         self.assertEqual(ens.llms["parser"].model, main.OPENROUTER_FREE_PARSER)
 
