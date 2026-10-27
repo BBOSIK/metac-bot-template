@@ -2,6 +2,9 @@ name: Forecast on new AI tournament questions
 
 on:
   workflow_dispatch:
+  push: # deploying new bot code also runs it once, without waiting for the cron
+    branches: [main]
+    paths: [main.py, .github/workflows/run_bot_on_tournament.yaml]
   schedule:
     - cron: "7,27,47 * * * *" # every 20 min, offset off the hour. Make sure to skip already-forecasted questions!
 
