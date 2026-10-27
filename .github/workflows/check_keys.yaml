@@ -1,0 +1,56 @@
+name: Check API keys
+
+# Verifies the Metaculus and OpenRouter secrets without forecasting anything.
+# Prints only status codes and account flags, never the keys themselves.
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/determined-hypatia-njbwtt]
+    paths: [.github/workflows/check_keys.yaml]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check keys
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, urllib.error, urllib.request
+
+          def call(url, headers, body=None):
+              req = urllib.request.Request(url, headers=headers, data=json.dumps(body).encode() if body else None)
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      return r.status, json.loads(r.read() or b"{}")
+              except urllib.error.HTTPError as e:
+                  return e.code, e.read().decode()[:300]
+
+          ok = True
+          mt = os.environ.get("METACULUS_TOKEN", "").strip()
+          status, data = call("https://www.metaculus.com/api/users/me/", {"Authorization": f"Token {mt}"})
+          print(f"Metaculus: HTTP {status}", data.get("username") if isinstance(data, dict) else data)
+          ok &= status == 200
+
+          key = os.environ.get("OPENROUTER_API_KEY", "")
+          print(f"OpenRouter key: length {len(key)}, stripped length {len(key.strip())}, starts with sk-or-v1-: {key.strip().startswith('sk-or-v1-')}")
+          auth = {"Authorization": f"Bearer {key.strip()}", "Content-Type": "application/json"}
+          status, data = call("https://openrouter.ai/api/v1/key", auth)
+          info = data.get("data", data) if isinstance(data, dict) else data
+          if isinstance(info, dict):
+              info = {k: info.get(k) for k in ("is_free_tier", "usage", "limit", "limit_remaining")}
+          print(f"OpenRouter /key: HTTP {status}", info)
+          ok &= status == 200
+
+          status, data = call(
+              "https://openrouter.ai/api/v1/chat/completions",
+              auth,
+              {"model": "nvidia/nemotron-3-super-120b-a12b:free", "messages": [{"role": "user", "content": "Reply with the single word OK."}], "max_tokens": 20},
+          )
+          reply = data["choices"][0]["message"].get("content") if isinstance(data, dict) and data.get("choices") else data
+          print(f"OpenRouter free model call: HTTP {status}", repr(reply)[:200])
+          ok &= status == 200
+          raise SystemExit(0 if ok else 1)
+          EOF
