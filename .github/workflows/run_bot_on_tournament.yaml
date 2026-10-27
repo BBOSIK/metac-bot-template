@@ -42,3 +42,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
           ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
+          # Optional model overrides: Settings -> Secrets and variables -> Actions -> Variables
+          BOT_FORECASTERS: ${{ vars.BOT_FORECASTERS }}
+          BOT_RESEARCHER: ${{ vars.BOT_RESEARCHER }}
+          BOT_PARSER: ${{ vars.BOT_PARSER }}
+          BOT_SKIP_MINIBENCH: ${{ vars.BOT_SKIP_MINIBENCH }}

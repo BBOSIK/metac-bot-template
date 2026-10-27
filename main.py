@@ -1,6 +1,8 @@
 import argparse
 import asyncio
 import logging
+import os
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -44,9 +46,78 @@ from forecasting_tools import (
 dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
 
+# Ensemble defaults when OPENROUTER_API_KEY is set. One forecast per vendor per research
+# report; disagreement between vendors is more informative than resampling one model.
+# Override any of these with comma-separated env vars (BOT_FORECASTERS, BOT_RESEARCHER, BOT_PARSER).
+OPENROUTER_FORECASTERS = [
+    "openrouter/openai/gpt-5.6-terra",
+    "openrouter/anthropic/claude-sonnet-5.5",
+    "openrouter/google/gemini-3.8-flash",
+    "openrouter/x-ai/grok-4.7",
+    "openrouter/deepseek/deepseek-v4-pro",
+]
+OPENROUTER_RESEARCHER = "openrouter/perplexity/sonar-pro"
+OPENROUTER_PARSER = "openrouter/openai/gpt-4.1-mini"
+FORECASTER_TIMEOUT_SECONDS = 240  # reasoning models routinely take 1-3 minutes
 
-class FallTemplateBot2026(ForecastBot):
+# The forecaster assigned to the prediction slot currently running. A ContextVar keeps
+# concurrent slots of the same question from seeing each other's model.
+_current_forecaster: ContextVar[GeneralLlm | None] = ContextVar(
+    "current_forecaster", default=None
+)
+
+
+def env_list(name: str) -> list[str]:
+    return [part.strip() for part in os.getenv(name, "").split(",") if part.strip()]
+
+
+def build_ensemble() -> tuple[list[GeneralLlm], dict[str, str | GeneralLlm]]:
+    """Forecaster list plus the llms= overrides for the other purposes.
+
+    With no OpenRouter key and no overrides this returns ([], {}), and the bot falls back
+    to forecasting-tools defaults (e.g. the Metaculus LLM proxy) with a single model.
     """
+    use_openrouter = os.getenv("OPENROUTER_API_KEY", "").strip() not in ("", "REPLACE_ME")
+    names = env_list("BOT_FORECASTERS") or (OPENROUTER_FORECASTERS if use_openrouter else [])
+    forecasters = [
+        GeneralLlm(
+            model=name,
+            temperature=0.3,
+            timeout=FORECASTER_TIMEOUT_SECONDS,
+            allowed_tries=2,
+        )
+        for name in names
+    ]
+    llms: dict[str, str | GeneralLlm] = {}
+    researcher = os.getenv("BOT_RESEARCHER", "").strip() or (
+        OPENROUTER_RESEARCHER if use_openrouter else ""
+    )
+    if researcher:
+        # asknews/... and smart-searcher/... are dispatched by name in run_research.
+        llms["researcher"] = (
+            researcher
+            if researcher.startswith(("asknews/", "smart-searcher/"))
+            else GeneralLlm(model=researcher, temperature=0.1, timeout=120)
+        )
+    parser = os.getenv("BOT_PARSER", "").strip() or (
+        OPENROUTER_PARSER if use_openrouter else ""
+    )
+    if parser:
+        llms["parser"] = GeneralLlm(model=parser, temperature=0.0)
+        llms["summarizer"] = GeneralLlm(model=parser, temperature=0.3)
+    if forecasters:
+        llms["default"] = forecasters[0]
+    return forecasters, llms
+
+
+class EnsembleBot(ForecastBot):
+    """
+    Multi-vendor ensemble built on the Metaculus Fall 2026 template bot.
+    Each research report gets one forecast from every model in `forecasters`
+    (round-robin over prediction slots), and the parent class aggregates them
+    (median for binary questions). Everything below this paragraph is the
+    template's original documentation.
+
     This is the template bot for the Fall 2026 FutureEval Bot Tournament.
     This is a copy of what is used by Metaculus to run the Metac Bots in our benchmark, provided as a template for new bot makers.
     This template is given as-is, and is use-at-your-own-risk.
@@ -125,6 +196,36 @@ class FallTemplateBot2026(ForecastBot):
     )
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
     _structure_output_validation_samples = 2
+
+    def __init__(self, *args, forecasters: list[GeneralLlm] | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.forecasters = forecasters or []
+        self._next_slot: dict[int, int] = {}
+
+    ##################################### ENSEMBLE #####################################
+
+    async def _make_prediction(self, question: MetaculusQuestion, research: str):
+        if not self.forecasters:
+            return await super()._make_prediction(question, research)
+        # No await between read and write, so concurrent slots of one question get distinct indices.
+        key = id(question)
+        slot = self._next_slot.get(key, 0)
+        self._next_slot[key] = slot + 1
+        token = _current_forecaster.set(self.forecasters[slot % len(self.forecasters)])
+        try:
+            return await super()._make_prediction(question, research)
+        finally:
+            _current_forecaster.reset(token)
+
+    def _forecaster_llm(self) -> GeneralLlm:
+        return _current_forecaster.get() or self.get_llm("default", "llm")
+
+    async def _invoke_forecaster(self, question: MetaculusQuestion, prompt: str) -> tuple[str, str]:
+        """Returns (reasoning to parse, reasoning to publish tagged with the model name)."""
+        llm = self._forecaster_llm()
+        reasoning = await llm.invoke(prompt)
+        logger.info(f"Reasoning ({llm.model}) for URL {question.page_url}: {reasoning}")
+        return reasoning, f"*Model: {llm.model}*\n\n{reasoning}"
 
     ##################################### RESEARCH #####################################
 
@@ -235,8 +336,7 @@ class FallTemplateBot2026(ForecastBot):
         question: BinaryQuestion,
         prompt: str,
     ) -> ReasonedPrediction[float]:
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
+        reasoning, published_reasoning = await self._invoke_forecaster(question, prompt)
         parsing_instructions = clean_indents(
             f"""
             The text given to you is trying to give a probability forecast for a binary question.
@@ -255,7 +355,9 @@ class FallTemplateBot2026(ForecastBot):
         logger.info(
             f"Forecasted URL {question.page_url} with prediction: {decimal_pred}."
         )
-        return ReasonedPrediction(prediction_value=decimal_pred, reasoning=reasoning)
+        return ReasonedPrediction(
+            prediction_value=decimal_pred, reasoning=published_reasoning
+        )
 
     ##################################### MULTIPLE CHOICE QUESTIONS #####################################
 
@@ -317,8 +419,7 @@ class FallTemplateBot2026(ForecastBot):
             {self._create_resolved_question_parsing_message()}
             """
         )
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
+        reasoning, published_reasoning = await self._invoke_forecaster(question, prompt)
         predicted_option_list: PredictedOptionList = await structure_output(
             text_to_structure=reasoning,
             output_type=PredictedOptionList,
@@ -331,7 +432,7 @@ class FallTemplateBot2026(ForecastBot):
             f"Forecasted URL {question.page_url} with prediction: {predicted_option_list}."
         )
         return ReasonedPrediction(
-            prediction_value=predicted_option_list, reasoning=reasoning
+            prediction_value=predicted_option_list, reasoning=published_reasoning
         )
 
     ##################################### NUMERIC QUESTIONS #####################################
@@ -400,8 +501,7 @@ class FallTemplateBot2026(ForecastBot):
         question: NumericQuestion,
         prompt: str,
     ) -> ReasonedPrediction[NumericDistribution]:
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
+        reasoning, published_reasoning = await self._invoke_forecaster(question, prompt)
         parsing_instructions = clean_indents(
             f"""
             The text given to you is trying to give a forecast distribution for a numeric question.
@@ -428,7 +528,9 @@ class FallTemplateBot2026(ForecastBot):
         logger.info(
             f"Forecasted URL {question.page_url} with prediction: {prediction.declared_percentiles}."
         )
-        return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning)
+        return ReasonedPrediction(
+            prediction_value=prediction, reasoning=published_reasoning
+        )
 
     ##################################### DATE QUESTIONS #####################################
 
@@ -496,8 +598,7 @@ class FallTemplateBot2026(ForecastBot):
         question: DateQuestion,
         prompt: str,
     ) -> ReasonedPrediction[NumericDistribution]:
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
+        reasoning, published_reasoning = await self._invoke_forecaster(question, prompt)
         parsing_instructions = clean_indents(
             f"""
             The text given to you is trying to give a forecast distribution for a date question.
@@ -528,7 +629,9 @@ class FallTemplateBot2026(ForecastBot):
         logger.info(
             f"Forecasted URL {question.page_url} with prediction: {prediction.declared_percentiles}."
         )
-        return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning)
+        return ReasonedPrediction(
+            prediction_value=prediction, reasoning=published_reasoning
+        )
 
     def _create_resolved_question_parsing_message(self) -> str:
         return "- If the text concludes that the question has already resolved *in the past* (i.e. it treats the question as decided rather than something to forecast), please DO NOT return a parsed output, even if a final forecast is also given. Instead indicate that the answer is not explicitly given in the text.\n"
@@ -704,28 +807,20 @@ if __name__ == "__main__":
     publish_to_metaculus = True
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
 
-    # Configure the bot. The `llms=` block below is commented out to use
-    # whichever default models forecasting-tools picks based on your env vars;
-    # uncomment and edit to pin specific models.
-    template_bot = FallTemplateBot2026(
+    # Models come from build_ensemble(): the OpenRouter defaults at the top of this
+    # file, or BOT_FORECASTERS / BOT_RESEARCHER / BOT_PARSER env overrides.
+    forecasters, llm_overrides = build_ensemble()
+    logger.info(f"Forecasters: {[f.model for f in forecasters] or 'library default x5'}")
+    template_bot = EnsembleBot(
         research_reports_per_question=1,
-        predictions_per_research_report=5,
+        predictions_per_research_report=len(forecasters) or 5,
         use_research_summary_to_forecast=False,
         publish_reports_to_metaculus=publish_to_metaculus,
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
-        # llms={
-        #     "default": GeneralLlm(
-        #         model="openrouter/openai/gpt-4o",
-        #         temperature=0.3,
-        #         timeout=40,
-        #         allowed_tries=2,
-        #     ),
-        #     "summarizer": "openai/gpt-4o-mini",
-        #     "researcher": "asknews/news-summaries",
-        #     "parser": "openai/gpt-4o-mini",
-        # },
+        llms=llm_overrides or None,
+        forecasters=forecasters,
     )
 
     # Per-mode tournament URL shown in the summary banner footer. These
@@ -747,9 +842,14 @@ if __name__ == "__main__":
                 client.CURRENT_AI_COMPETITION_ID, return_exceptions=True
             )
         )
-        minibench_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                client.CURRENT_MINIBENCH_ID, return_exceptions=True
+        # BOT_SKIP_MINIBENCH=1 saves roughly half the LLM spend when credits run low.
+        minibench_reports = (
+            []
+            if os.getenv("BOT_SKIP_MINIBENCH") == "1"
+            else asyncio.run(
+                template_bot.forecast_on_tournament(
+                    client.CURRENT_MINIBENCH_ID, return_exceptions=True
+                )
             )
         )
         forecast_reports = seasonal_tournament_reports + minibench_reports
