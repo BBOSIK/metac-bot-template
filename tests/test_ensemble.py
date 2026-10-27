@@ -70,34 +70,54 @@ class EnsembleTest(unittest.TestCase):
         self.assertAlmostEqual(report.prediction, 0.50)
         self.assertIn("*Model: fake/helper*", report.explanation)
 
+    def test_question_cap_skips_forecasted_then_truncates(self):
+        model = FakeLlm("fake/m0", "Probability: 40%")
+        bot = make_bot([model])
+        bot.skip_previously_forecasted_questions = True
+        bot.max_questions_per_run = 2
+        done = question(1)
+        done.already_forecasted = True
+        reports = asyncio.run(bot.forecast_questions([done, question(2), question(3), question(4)]))
+        self.assertEqual([r.question.page_url for r in reports], ["https://example.test/q2", "https://example.test/q3"])
+
+
+BLANK_ENV = {"OPENROUTER_API_KEY": "", "BOT_TIER": "", "BOT_FORECASTERS": "", "BOT_RESEARCHER": "", "BOT_PARSER": ""}
+
 
 class BuildEnsembleTest(unittest.TestCase):
-    def test_openrouter_key_enables_default_ensemble(self):
-        env = {"OPENROUTER_API_KEY": "sk-or-test", "BOT_FORECASTERS": "", "BOT_RESEARCHER": "", "BOT_PARSER": ""}
-        with mock.patch.dict(os.environ, env):
-            forecasters, llms = main.build_ensemble()
-        self.assertEqual([f.model for f in forecasters], main.OPENROUTER_FORECASTERS)
-        self.assertEqual(llms["researcher"].model, main.OPENROUTER_RESEARCHER)
-        self.assertEqual(llms["parser"].model, main.OPENROUTER_PARSER)
-        self.assertIs(llms["default"], forecasters[0])
+    def build(self, **env):
+        with mock.patch.dict(os.environ, {**BLANK_ENV, **env}):
+            return main.build_ensemble()
+
+    def test_openrouter_key_defaults_to_free_tier(self):
+        ens = self.build(OPENROUTER_API_KEY="sk-or-test")
+        self.assertTrue(ens.free_tier)
+        self.assertEqual([f.model for f in ens.forecasters], main.OPENROUTER_FREE_FORECASTERS)
+        self.assertTrue(all(f.model.endswith(":free") for f in ens.forecasters))
+        self.assertEqual(ens.llms["researcher"], "no_research")
+        self.assertEqual(ens.llms["parser"].model, main.OPENROUTER_FREE_PARSER)
+
+    def test_paid_tier_uses_full_ensemble(self):
+        ens = self.build(OPENROUTER_API_KEY="sk-or-test", BOT_TIER="paid")
+        self.assertFalse(ens.free_tier)
+        self.assertEqual([f.model for f in ens.forecasters], main.OPENROUTER_FORECASTERS)
+        self.assertEqual(ens.llms["researcher"].model, main.OPENROUTER_RESEARCHER)
+        self.assertEqual(ens.llms["parser"].model, main.OPENROUTER_PARSER)
+        self.assertIs(ens.llms["default"], ens.forecasters[0])
 
     def test_env_overrides_and_asknews_passthrough(self):
-        env = {
-            "OPENROUTER_API_KEY": "REPLACE_ME",
-            "BOT_FORECASTERS": "metaculus/a, metaculus/b",
-            "BOT_RESEARCHER": "asknews/news-summaries",
-            "BOT_PARSER": "",
-        }
-        with mock.patch.dict(os.environ, env):
-            forecasters, llms = main.build_ensemble()
-        self.assertEqual([f.model for f in forecasters], ["metaculus/a", "metaculus/b"])
-        self.assertEqual(llms["researcher"], "asknews/news-summaries")
-        self.assertNotIn("parser", llms)
+        ens = self.build(
+            OPENROUTER_API_KEY="REPLACE_ME",
+            BOT_FORECASTERS="metaculus/a, metaculus/b",
+            BOT_RESEARCHER="asknews/news-summaries",
+        )
+        self.assertFalse(ens.free_tier)
+        self.assertEqual([f.model for f in ens.forecasters], ["metaculus/a", "metaculus/b"])
+        self.assertEqual(ens.llms["researcher"], "asknews/news-summaries")
+        self.assertNotIn("parser", ens.llms)
 
     def test_no_keys_means_library_defaults(self):
-        env = {"OPENROUTER_API_KEY": "", "BOT_FORECASTERS": "", "BOT_RESEARCHER": "", "BOT_PARSER": ""}
-        with mock.patch.dict(os.environ, env):
-            self.assertEqual(main.build_ensemble(), ([], {}))
+        self.assertEqual(self.build(), main.Ensemble())
 
 
 if __name__ == "__main__":

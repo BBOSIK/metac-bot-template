@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -58,6 +59,18 @@ OPENROUTER_FORECASTERS = [
 ]
 OPENROUTER_RESEARCHER = "openrouter/perplexity/sonar-pro"
 OPENROUTER_PARSER = "openrouter/openai/gpt-4.1-mini"
+
+# Zero-cost tier, used unless BOT_TIER=paid: OpenRouter ':free' models need no credit
+# purchase but allow only 20 requests/minute and 50/day per account, and have no web
+# search, so the bot forecasts from model knowledge alone and takes few questions per run.
+OPENROUTER_FREE_FORECASTERS = [
+    "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+    "openrouter/google/gemma-4-31b-it:free",
+    "openrouter/thinkingmachines/inkling:free",
+]
+OPENROUTER_FREE_PARSER = "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+FREE_TIER_QUESTIONS_PER_RUN = 2  # per tournament; ~6 requests per question
+
 FORECASTER_TIMEOUT_SECONDS = 240  # reasoning models routinely take 1-3 minutes
 
 # The forecaster assigned to the prediction slot currently running. A ContextVar keeps
@@ -71,14 +84,23 @@ def env_list(name: str) -> list[str]:
     return [part.strip() for part in os.getenv(name, "").split(",") if part.strip()]
 
 
-def build_ensemble() -> tuple[list[GeneralLlm], dict[str, str | GeneralLlm]]:
-    """Forecaster list plus the llms= overrides for the other purposes.
+@dataclass
+class Ensemble:
+    forecasters: list[GeneralLlm] = field(default_factory=list)
+    llms: dict[str, str | GeneralLlm] = field(default_factory=dict)  # llms= overrides
+    free_tier: bool = False  # trim LLM calls per question to fit the free daily cap
 
-    With no OpenRouter key and no overrides this returns ([], {}), and the bot falls back
-    to forecasting-tools defaults (e.g. the Metaculus LLM proxy) with a single model.
+
+def build_ensemble() -> Ensemble:
+    """Forecasters plus the llms= overrides for the other purposes.
+
+    With no OpenRouter key and no overrides this returns an empty Ensemble, and the bot
+    falls back to forecasting-tools defaults (e.g. the Metaculus LLM proxy) with one model.
     """
     use_openrouter = os.getenv("OPENROUTER_API_KEY", "").strip() not in ("", "REPLACE_ME")
-    names = env_list("BOT_FORECASTERS") or (OPENROUTER_FORECASTERS if use_openrouter else [])
+    free_tier = use_openrouter and os.getenv("BOT_TIER", "").strip() != "paid"
+    default_names = OPENROUTER_FREE_FORECASTERS if free_tier else OPENROUTER_FORECASTERS
+    names = env_list("BOT_FORECASTERS") or (default_names if use_openrouter else [])
     forecasters = [
         GeneralLlm(
             model=name,
@@ -89,25 +111,26 @@ def build_ensemble() -> tuple[list[GeneralLlm], dict[str, str | GeneralLlm]]:
         for name in names
     ]
     llms: dict[str, str | GeneralLlm] = {}
-    researcher = os.getenv("BOT_RESEARCHER", "").strip() or (
-        OPENROUTER_RESEARCHER if use_openrouter else ""
-    )
+    researcher = os.getenv("BOT_RESEARCHER", "").strip()
+    if not researcher and use_openrouter:
+        researcher = "no_research" if free_tier else OPENROUTER_RESEARCHER
     if researcher:
-        # asknews/... and smart-searcher/... are dispatched by name in run_research.
+        # no_research, asknews/... and smart-searcher/... are dispatched by name in run_research.
         llms["researcher"] = (
             researcher
-            if researcher.startswith(("asknews/", "smart-searcher/"))
+            if researcher == "no_research"
+            or researcher.startswith(("asknews/", "smart-searcher/"))
             else GeneralLlm(model=researcher, temperature=0.1, timeout=120)
         )
-    parser = os.getenv("BOT_PARSER", "").strip() or (
-        OPENROUTER_PARSER if use_openrouter else ""
-    )
+    parser = os.getenv("BOT_PARSER", "").strip()
+    if not parser and use_openrouter:
+        parser = OPENROUTER_FREE_PARSER if free_tier else OPENROUTER_PARSER
     if parser:
         llms["parser"] = GeneralLlm(model=parser, temperature=0.0)
         llms["summarizer"] = GeneralLlm(model=parser, temperature=0.3)
     if forecasters:
         llms["default"] = forecasters[0]
-    return forecasters, llms
+    return Ensemble(forecasters, llms, free_tier)
 
 
 class EnsembleBot(ForecastBot):
@@ -197,12 +220,27 @@ class EnsembleBot(ForecastBot):
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
     _structure_output_validation_samples = 2
 
-    def __init__(self, *args, forecasters: list[GeneralLlm] | None = None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        forecasters: list[GeneralLlm] | None = None,
+        max_questions_per_run: int | None = None,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.forecasters = forecasters or []
+        self.max_questions_per_run = max_questions_per_run
         self._next_slot: dict[int, int] = {}
 
     ##################################### ENSEMBLE #####################################
+
+    async def forecast_questions(self, questions, return_exceptions: bool = False):
+        if self.max_questions_per_run is not None:
+            # Leftovers are picked up by later runs, since forecasted questions are skipped.
+            if self.skip_previously_forecasted_questions:
+                questions = [q for q in questions if not q.already_forecasted]
+            questions = questions[: self.max_questions_per_run]
+        return await super().forecast_questions(questions, return_exceptions)
 
     async def _make_prediction(self, question: MetaculusQuestion, research: str):
         if not self.forecasters:
@@ -809,19 +847,27 @@ if __name__ == "__main__":
 
     # Models come from build_ensemble(): the OpenRouter defaults at the top of this
     # file, or BOT_FORECASTERS / BOT_RESEARCHER / BOT_PARSER env overrides.
-    forecasters, llm_overrides = build_ensemble()
-    logger.info(f"Forecasters: {[f.model for f in forecasters] or 'library default x5'}")
+    ensemble = build_ensemble()
+    logger.info(
+        f"Forecasters: {[f.model for f in ensemble.forecasters] or 'library default x5'}"
+        f" (free tier: {ensemble.free_tier})"
+    )
     template_bot = EnsembleBot(
         research_reports_per_question=1,
-        predictions_per_research_report=len(forecasters) or 5,
+        predictions_per_research_report=len(ensemble.forecasters) or 5,
         use_research_summary_to_forecast=False,
         publish_reports_to_metaculus=publish_to_metaculus,
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
-        llms=llm_overrides or None,
-        forecasters=forecasters,
+        llms=ensemble.llms or None,
+        forecasters=ensemble.forecasters,
+        # Free tier: no research to summarize, one parse per forecast, few questions per run.
+        enable_summarize_research=not ensemble.free_tier,
+        max_questions_per_run=FREE_TIER_QUESTIONS_PER_RUN if ensemble.free_tier else None,
     )
+    if ensemble.free_tier:
+        template_bot._structure_output_validation_samples = 1
 
     # Per-mode tournament URL shown in the summary banner footer. These
     # piggyback on the forecasting_tools SDK constants and need updating

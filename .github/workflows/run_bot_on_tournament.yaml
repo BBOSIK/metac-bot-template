@@ -43,6 +43,7 @@ jobs:
           ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
           ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
           # Optional model overrides: Settings -> Secrets and variables -> Actions -> Variables
+          BOT_TIER: ${{ vars.BOT_TIER }}
           BOT_FORECASTERS: ${{ vars.BOT_FORECASTERS }}
           BOT_RESEARCHER: ${{ vars.BOT_RESEARCHER }}
           BOT_PARSER: ${{ vars.BOT_PARSER }}
