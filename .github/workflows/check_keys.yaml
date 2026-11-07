@@ -29,7 +29,7 @@ jobs:
           PRESENT_OPENAI_TOKEN: ${{ secrets.OPENAI_TOKEN != '' }}
           PRESENT_VAR_OPENAI_TOKEN: ${{ vars.OPENAI_TOKEN != '' }}
           # Model ids main.py's "openai" tier uses (without the openai/ prefix).
-          OPENAI_MODELS: gpt-5.4 gpt-5.6-terra gpt-5.6-sol gpt-4o-search-preview gpt-4.1-mini
+          OPENAI_MODELS: gpt-5.4 gpt-5.6-terra gpt-5.6-sol gpt-5-search-api gpt-4.1-mini
           PROBE_MODELS: >-
             nvidia/nemotron-3-ultra-550b-a55b:free
             nvidia/nemotron-3.5-super-vl:free

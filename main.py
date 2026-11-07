@@ -67,13 +67,13 @@ strip_secret_env()
 # is more informative than resampling one.
 #
 # "openai": paid by the Metaculus-sponsored OpenAI credit grant; web research via the
-# search-preview model. Roughly $0.25 per question at list prices (estimate).
+# search API model. Roughly $0.25 per question at list prices (estimate).
 OPENAI_FORECASTERS = [
     "openai/gpt-5.4",
     "openai/gpt-5.6-terra",
     "openai/gpt-5.6-sol",
 ]
-OPENAI_RESEARCHER = "openai/gpt-4o-search-preview"
+OPENAI_RESEARCHER = "openai/gpt-5-search-api"  # the only search model on the granted key
 OPENAI_PARSER = "openai/gpt-4.1-mini"
 
 # "paid": five vendors through OpenRouter credits, Perplexity research.

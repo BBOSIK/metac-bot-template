@@ -2,6 +2,9 @@ name: Test Bot
 
 on:
   workflow_dispatch:
+  push: # smoke-test bot changes on the setup branch before they reach main
+    branches: [claude/determined-hypatia-njbwtt]
+    paths: [main.py]
 
 # Add concurrency group to prevent parallel runs
 concurrency:
