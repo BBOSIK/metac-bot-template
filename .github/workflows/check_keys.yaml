@@ -16,7 +16,7 @@ jobs:
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || secrets.OPEN }} # the OpenAI key is saved as OPEN
           # Presence flags only (true/false), to spot the OpenAI key saved under another name or as a variable.
           PRESENT_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
           PRESENT_VAR_OPENAI_API_KEY: ${{ vars.OPENAI_API_KEY != '' }}
