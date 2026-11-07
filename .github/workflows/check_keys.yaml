@@ -21,8 +21,6 @@ jobs:
           OPENAI_MODELS: gpt-5.4 gpt-5.6-terra gpt-5.6-sol gpt-4o-search-preview gpt-4.1-mini
           PROBE_MODELS: >-
             nvidia/nemotron-3-ultra-550b-a55b:free
-            google/gemma-4-31b-it:free
-            thinkingmachines/inkling:free
             nvidia/nemotron-3.5-super-vl:free
             dots-studio/dots-3-note-preview:free
             openrouter/free
