@@ -73,6 +73,7 @@ jobs:
               status, data = call("https://api.openai.com/v1/models", oa_auth)
               available = {m["id"] for m in data.get("data", [])} if isinstance(data, dict) else set()
               print(f"OpenAI /models: HTTP {status}, {len(available)} models")
+              print("  web-search models:", sorted(m for m in available if "search" in m))
               for model in os.environ.get("OPENAI_MODELS", "").split():
                   print(f"  {model}: {'available' if model in available else 'MISSING'}")
               # One tiny call proves the credit grant pays for usage (fractions of a cent).
