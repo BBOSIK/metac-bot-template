@@ -962,6 +962,7 @@ if __name__ == "__main__":
         # the recommended target for smoke-testing your bot.
         # https://www.metaculus.com/tournament/bot-testing-area/
         template_bot.skip_previously_forecasted_questions = False
+        template_bot.max_questions_per_run = 2  # a smoke test; all 10 cost ~$2.40 on paid models
         forecast_reports = asyncio.run(
             template_bot.forecast_on_tournament(
                 "bot-testing-area", return_exceptions=True
