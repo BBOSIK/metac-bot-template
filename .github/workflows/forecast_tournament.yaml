@@ -1,25 +1,30 @@
 name: Forecast on new AI tournament questions
 
+# GitHub's cron fired only every 4-7 hours on this fork, while tournament questions stay
+# open for 3 hours, so about 40% were missed. Each run now loops for ~5h20m, checking
+# every 20 minutes, and then dispatches the next run itself. The cron stays as a backstop
+# that restarts the chain if it ever breaks; the concurrency group keeps one loop at a time.
 on:
   workflow_dispatch:
-  push: # deploying new bot code also runs it once, without waiting for the cron
+  push: # deploying new bot code also starts the loop, without waiting for the cron
     branches: [main]
     paths: [main.py, .github/workflows/forecast_tournament.yaml]
   schedule:
-    - cron: "7,27,47 * * * *" # every 20 min, offset off the hour. Make sure to skip already-forecasted questions!
+    - cron: "7,27,47 * * * *"
 
-# Add concurrency group to prevent parallel runs
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  actions: write # lets the run dispatch the next one
 
-# Daily job to run the simple forecast bot
 jobs:
   forecast_job:
-    runs-on: ubuntu-latest # determines the machine that will run the job - keep as is
-    steps: # sets up the steps that will be run in order
-      # setup repository with all necessary dependencies - keep as is
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
       - name: Check out repository
         uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,13 +36,17 @@ jobs:
           version: "0.13.1"
       - name: Install dependencies
         run: uv sync --locked
-      - name: Run bot
+      - name: Run bot every 20 minutes
         run: |
-          uv run python main.py
-        # this reads the environment variables from the github repository.
+          end=$((SECONDS + 320 * 60))
+          while true; do
+            uv run python main.py || echo "::warning::bot run failed; retrying next cycle"
+            [ $((SECONDS + 20 * 60)) -lt "$end" ] || break
+            sleep $((20 * 60))
+          done
         # Store under Settings --> Secrets and variables --> Actions
         env:
-          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }} # replace this with the name of the variable under which you stored your own Metaculus token
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || secrets.OPEN }} # the OpenAI key is saved as OPEN
@@ -51,3 +60,7 @@ jobs:
           BOT_RESEARCHER: ${{ vars.BOT_RESEARCHER }}
           BOT_PARSER: ${{ vars.BOT_PARSER }}
           BOT_SKIP_MINIBENCH: ${{ vars.BOT_SKIP_MINIBENCH }}
+      - name: Start the next loop # only after a clean loop, so a broken setup cannot spin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run forecast_tournament.yaml --ref main --repo "$GITHUB_REPOSITORY"
