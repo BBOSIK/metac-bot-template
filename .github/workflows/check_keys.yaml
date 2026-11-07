@@ -16,6 +16,9 @@ jobs:
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Model ids main.py's "openai" tier uses (without the openai/ prefix).
+          OPENAI_MODELS: gpt-5.4 gpt-5.6-terra gpt-5.6-sol gpt-4o-search-preview gpt-4.1-mini
           PROBE_MODELS: >-
             nvidia/nemotron-3-ultra-550b-a55b:free
             google/gemma-4-31b-it:free
@@ -50,6 +53,26 @@ jobs:
               info = {k: info.get(k) for k in ("is_free_tier", "usage", "limit", "limit_remaining")}
           print(f"OpenRouter /key: HTTP {status}", info)
           ok &= status == 200
+
+          oa = os.environ.get("OPENAI_API_KEY", "").strip()
+          if oa:
+              oa_auth = {"Authorization": f"Bearer {oa}", "Content-Type": "application/json"}
+              status, data = call("https://api.openai.com/v1/models", oa_auth)
+              available = {m["id"] for m in data.get("data", [])} if isinstance(data, dict) else set()
+              print(f"OpenAI /models: HTTP {status}, {len(available)} models")
+              for model in os.environ.get("OPENAI_MODELS", "").split():
+                  print(f"  {model}: {'available' if model in available else 'MISSING'}")
+              # One tiny call proves the credit grant pays for usage (fractions of a cent).
+              status, data = call(
+                  "https://api.openai.com/v1/chat/completions",
+                  oa_auth,
+                  {"model": "gpt-4.1-mini", "messages": [{"role": "user", "content": "Reply with the single word OK."}], "max_tokens": 5},
+              )
+              reply = data["choices"][0]["message"].get("content") if isinstance(data, dict) and data.get("choices") else data
+              print(f"OpenAI call: HTTP {status}", repr(reply)[:200])
+              ok &= status == 200
+          else:
+              print("OpenAI: no OPENAI_API_KEY secret")
 
           # Free models rotate without notice; each probe costs one of the 50 free requests/day.
           models = os.environ.get("PROBE_MODELS", "").split()

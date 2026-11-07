@@ -60,9 +60,23 @@ def strip_secret_env() -> None:
 
 strip_secret_env()
 
-# Ensemble defaults when OPENROUTER_API_KEY is set. One forecast per vendor per research
-# report; disagreement between vendors is more informative than resampling one model.
-# Override any of these with comma-separated env vars (BOT_FORECASTERS, BOT_RESEARCHER, BOT_PARSER).
+# Model presets per tier. BOT_TIER picks one explicitly; otherwise the first key present
+# decides: OPENAI_API_KEY -> "openai", OPENROUTER_API_KEY -> "free". Override any model
+# with comma-separated env vars (BOT_FORECASTERS, BOT_RESEARCHER, BOT_PARSER).
+# Each research report gets one forecast per listed model; disagreement between models
+# is more informative than resampling one.
+#
+# "openai": paid by the Metaculus-sponsored OpenAI credit grant; web research via the
+# search-preview model. Roughly $0.25 per question at list prices (estimate).
+OPENAI_FORECASTERS = [
+    "openai/gpt-5.4",
+    "openai/gpt-5.6-terra",
+    "openai/gpt-5.6-sol",
+]
+OPENAI_RESEARCHER = "openai/gpt-4o-search-preview"
+OPENAI_PARSER = "openai/gpt-4.1-mini"
+
+# "paid": five vendors through OpenRouter credits, Perplexity research.
 OPENROUTER_FORECASTERS = [
     "openrouter/openai/gpt-5.6-terra",
     "openrouter/anthropic/claude-sonnet-5.5",
@@ -73,9 +87,9 @@ OPENROUTER_FORECASTERS = [
 OPENROUTER_RESEARCHER = "openrouter/perplexity/sonar-pro"
 OPENROUTER_PARSER = "openrouter/openai/gpt-4.1-mini"
 
-# Zero-cost tier, used unless BOT_TIER=paid: OpenRouter ':free' models need no credit
-# purchase but allow only 20 requests/minute and 50/day per account, and have no web
-# search, so the bot forecasts from model knowledge alone and takes few questions per run.
+# "free": OpenRouter ':free' models need no credit purchase but allow only 20
+# requests/minute and 50/day per account, and have no web search, so the bot forecasts
+# from model knowledge alone and takes few questions per run.
 # Probed 2026-10-27 with the "Check API keys" workflow; free models rotate, so re-probe
 # there when calls start failing. openrouter/free routes to whichever free model is up.
 OPENROUTER_FREE_FORECASTERS = [
@@ -85,6 +99,12 @@ OPENROUTER_FREE_FORECASTERS = [
 ]
 OPENROUTER_FREE_PARSER = "openrouter/nvidia/nemotron-3.5-super-vl:free"
 FREE_TIER_QUESTIONS_PER_RUN = 2  # per tournament; ~6 requests per question
+
+TIER_PRESETS = {  # tier -> (forecasters, researcher, parser)
+    "openai": (OPENAI_FORECASTERS, OPENAI_RESEARCHER, OPENAI_PARSER),
+    "paid": (OPENROUTER_FORECASTERS, OPENROUTER_RESEARCHER, OPENROUTER_PARSER),
+    "free": (OPENROUTER_FREE_FORECASTERS, "no_research", OPENROUTER_FREE_PARSER),
+}
 
 FORECASTER_TIMEOUT_SECONDS = 240  # reasoning models routinely take 1-3 minutes
 
@@ -106,16 +126,32 @@ class Ensemble:
     free_tier: bool = False  # trim LLM calls per question to fit the free daily cap
 
 
+def has_key(name: str) -> bool:
+    return os.getenv(name, "").strip() not in ("", "REPLACE_ME")
+
+
+def resolve_tier() -> str:
+    tier = os.getenv("BOT_TIER", "").strip()
+    if tier:
+        if tier not in TIER_PRESETS:
+            raise ValueError(f"BOT_TIER must be one of {sorted(TIER_PRESETS)}, got {tier!r}")
+        return tier
+    if has_key("OPENAI_API_KEY"):
+        return "openai"
+    if has_key("OPENROUTER_API_KEY"):
+        return "free"
+    return ""
+
+
 def build_ensemble() -> Ensemble:
     """Forecasters plus the llms= overrides for the other purposes.
 
-    With no OpenRouter key and no overrides this returns an empty Ensemble, and the bot
-    falls back to forecasting-tools defaults (e.g. the Metaculus LLM proxy) with one model.
+    With no key and no overrides this returns an empty Ensemble, and the bot falls back
+    to forecasting-tools defaults (e.g. the Metaculus LLM proxy) with one model.
     """
-    use_openrouter = os.getenv("OPENROUTER_API_KEY", "").strip() not in ("", "REPLACE_ME")
-    free_tier = use_openrouter and os.getenv("BOT_TIER", "").strip() != "paid"
-    default_names = OPENROUTER_FREE_FORECASTERS if free_tier else OPENROUTER_FORECASTERS
-    names = env_list("BOT_FORECASTERS") or (default_names if use_openrouter else [])
+    tier = resolve_tier()
+    preset_forecasters, preset_researcher, preset_parser = TIER_PRESETS.get(tier, ([], "", ""))
+    names = env_list("BOT_FORECASTERS") or preset_forecasters
     forecasters = [
         GeneralLlm(
             model=name,
@@ -126,9 +162,7 @@ def build_ensemble() -> Ensemble:
         for name in names
     ]
     llms: dict[str, str | GeneralLlm] = {}
-    researcher = os.getenv("BOT_RESEARCHER", "").strip()
-    if not researcher and use_openrouter:
-        researcher = "no_research" if free_tier else OPENROUTER_RESEARCHER
+    researcher = os.getenv("BOT_RESEARCHER", "").strip() or preset_researcher
     if researcher:
         # no_research, asknews/... and smart-searcher/... are dispatched by name in run_research.
         llms["researcher"] = (
@@ -137,15 +171,13 @@ def build_ensemble() -> Ensemble:
             or researcher.startswith(("asknews/", "smart-searcher/"))
             else GeneralLlm(model=researcher, temperature=0.1, timeout=120)
         )
-    parser = os.getenv("BOT_PARSER", "").strip()
-    if not parser and use_openrouter:
-        parser = OPENROUTER_FREE_PARSER if free_tier else OPENROUTER_PARSER
+    parser = os.getenv("BOT_PARSER", "").strip() or preset_parser
     if parser:
         llms["parser"] = GeneralLlm(model=parser, temperature=0.0)
         llms["summarizer"] = GeneralLlm(model=parser, temperature=0.3)
     if forecasters:
         llms["default"] = forecasters[0]
-    return Ensemble(forecasters, llms, free_tier)
+    return Ensemble(forecasters, llms, free_tier=tier == "free")
 
 
 class EnsembleBot(ForecastBot):

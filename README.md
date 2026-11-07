@@ -5,6 +5,7 @@ Fork of the Metaculus template bot, entered in the FutureEval bot tournament as 
 Changes from the template (all in `main.py`):
 - **Ensemble across vendors**: each research report gets one forecast per model in `forecasters` (round-robin over prediction slots) and the median is submitted. Each published rationale is tagged with its model.
 - **Free tier (default with an OpenRouter key)**: three OpenRouter `:free` models, no web research, one parse per forecast and at most two questions per tournament per run, to stay inside the free request caps.
+- **OpenAI tier (default when `OPENAI_API_KEY` is set)**: GPT-5.4, GPT-5.6 terra and sol with `gpt-4o-search-preview` web research, paid by the Metaculus-sponsored OpenAI credit grant. Metaculus Cup runs stay on the free tier.
 - **Paid tier (`BOT_TIER=paid`)**: GPT, Claude, Gemini, Grok and DeepSeek via OpenRouter, with Perplexity `sonar-pro` research.
 - Repository variables `BOT_FORECASTERS`, `BOT_RESEARCHER`, `BOT_PARSER` override the models; `BOT_SKIP_MINIBENCH=1` skips MiniBench.
 - Offline tests: `uv run python -m unittest discover -s tests`.

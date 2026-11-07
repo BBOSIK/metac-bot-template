@@ -81,7 +81,14 @@ class EnsembleTest(unittest.TestCase):
         self.assertEqual([r.question.page_url for r in reports], ["https://example.test/q2", "https://example.test/q3"])
 
 
-BLANK_ENV = {"OPENROUTER_API_KEY": "", "BOT_TIER": "", "BOT_FORECASTERS": "", "BOT_RESEARCHER": "", "BOT_PARSER": ""}
+BLANK_ENV = {
+    "OPENAI_API_KEY": "",
+    "OPENROUTER_API_KEY": "",
+    "BOT_TIER": "",
+    "BOT_FORECASTERS": "",
+    "BOT_RESEARCHER": "",
+    "BOT_PARSER": "",
+}
 
 
 class BuildEnsembleTest(unittest.TestCase):
@@ -104,6 +111,22 @@ class BuildEnsembleTest(unittest.TestCase):
         self.assertEqual(ens.llms["researcher"].model, main.OPENROUTER_RESEARCHER)
         self.assertEqual(ens.llms["parser"].model, main.OPENROUTER_PARSER)
         self.assertIs(ens.llms["default"], ens.forecasters[0])
+
+    def test_openai_key_uses_openai_tier_with_web_research(self):
+        ens = self.build(OPENAI_API_KEY="sk-test")
+        self.assertFalse(ens.free_tier)
+        self.assertEqual([f.model for f in ens.forecasters], main.OPENAI_FORECASTERS)
+        self.assertEqual(ens.llms["researcher"].model, main.OPENAI_RESEARCHER)
+        self.assertEqual(ens.llms["parser"].model, main.OPENAI_PARSER)
+
+    def test_openai_key_wins_over_openrouter_unless_tier_is_set(self):
+        both = {"OPENAI_API_KEY": "sk-test", "OPENROUTER_API_KEY": "sk-or-test"}
+        self.assertEqual([f.model for f in self.build(**both).forecasters], main.OPENAI_FORECASTERS)
+        self.assertTrue(self.build(**both, BOT_TIER="free").free_tier)
+
+    def test_unknown_tier_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.build(BOT_TIER="premium")
 
     def test_env_overrides_and_asknews_passthrough(self):
         ens = self.build(
