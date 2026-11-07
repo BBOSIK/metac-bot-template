@@ -17,6 +17,9 @@ jobs:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Only the names are printed, to spot a secret saved under the wrong name or as a variable.
+          SECRET_NAMES_JSON: ${{ toJSON(secrets) }}
+          VARIABLE_NAMES_JSON: ${{ toJSON(vars) }}
           # Model ids main.py's "openai" tier uses (without the openai/ prefix).
           OPENAI_MODELS: gpt-5.4 gpt-5.6-terra gpt-5.6-sol gpt-4o-search-preview gpt-4.1-mini
           PROBE_MODELS: >-
@@ -37,6 +40,9 @@ jobs:
                   return e.code, e.read().decode()[:300]
 
           ok = True
+          for label, var in (("Repository secrets", "SECRET_NAMES_JSON"), ("Repository variables", "VARIABLE_NAMES_JSON")):
+              names = sorted(json.loads(os.environ.get(var) or "{}"))
+              print(f"{label} visible to Actions: {[n for n in names if n != 'github_token']}")
           mt = os.environ.get("METACULUS_TOKEN", "").strip()
           status, data = call("https://www.metaculus.com/api/users/me/", {"Authorization": f"Token {mt}"})
           print(f"Metaculus: HTTP {status}", data.get("username") if isinstance(data, dict) else data)
